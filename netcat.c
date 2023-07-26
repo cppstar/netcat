@@ -33,6 +33,7 @@
  */
 
 #define _GNU_SOURCE
+#define DEBUG
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -50,6 +51,7 @@
 #if defined(TCP_MD5SIG) && defined(TCP_MD5SIG_MAXKEYLEN)
 #include <bsd/readpassphrase.h>
 #endif
+#include "sqlite3.h"
 
 #ifndef IPTOS_LOWDELAY
 #define IPTOS_LOWDELAY 0x10
@@ -116,10 +118,6 @@
 #define PORT_MAX 65535
 #define UNIX_DG_TMP_SOCKET_SIZE 19
 
-#define POLL_STDIN 0
-#define POLL_NETOUT 1
-#define POLL_NETIN 2
-#define POLL_STDOUT 3
 #define BUFSIZE 16384
 
 #ifdef TLS
@@ -190,7 +188,43 @@ char *unix_dg_tmp_socket;
 int ttl = -1;
 int minttl = -1;
 
-char sndbuf[1500];
+#define MAX_SNDBUF 1400
+char sndbuf[MAX_SNDBUF];
+sqlite3 *db = NULL;
+int sndcount = MAX_SNDBUF;
+
+// Sqlite operation string.
+char *sql_create_table_record = "CREATE TABLE record(\
+time_sec BIGINT NOT NULL,\
+time_usec BIGINT NOT NULL,\
+rtt BIGINT NOT NULL,\
+host TEXT NOT NULL,\
+port INT NOT NULL,\
+is_proxy INT NOT NULL)";
+
+char *sql_create_index_record_time_sec = "CREATE INDEX index_record_time_sec ON record (time_sec)";
+char *sql_create_index_record_host = "CREATE INDEX index_record_host ON record (host)";
+char *sql_create_index_record_port = "CREATE INDEX index_record_port ON record (port)";
+
+char *sql_create_table_server_log = "CREATE TABLE server_log(\
+time_sec BIGINT NOT NULL,\
+time_usec BIGINT NOT NULL,\
+event TEXT NOT NULL,\
+details TEXT NOT NULL)";
+
+char *sql_create_index_server_log_time_sec = "CREATE INDEX index_server_log_time_sec ON server_log (time_sec)";
+
+char *sql_create_table_client_log = "CREATE TABLE client_log(\
+time_sec BIGINT NOT NULL,\
+time_usec BIGINT NOT NULL,\
+event TEXT NOT NULL,\
+details TEXT NOT NULL)";
+
+char *sql_create_index_client_log_time_sec = "CREATE INDEX index_client_log_time_sec ON client_log (time_sec)";
+
+char *sql_insert_record = "INSERT INTO record(time_sec,time_usec,rtt,host,port,is_proxy) VALUES(%ld,%ld,%ld,'%s','%s',%d)";
+char *sql_insert_server_log = "INSERT INTO server_log(time_sec,time_usec,event,details) VALUES(%ld,%ld,'%s','%s')";
+char *sql_insert_client_log = "INSERT INTO client_log(time_sec,time_usec,event,details) VALUES(%ld,%ld,'%s','%s')";
 
 void atelnet(int, unsigned char *, unsigned int);
 int strtoport(char *portstr, int udp);
@@ -200,7 +234,7 @@ int local_listen(const char *, const char *, struct addrinfo);
 #if defined(TLS)
 void readwrite(int, struct tls *);
 #else
-void readwrite(int);
+void readwrite(int net_fd, const char *host, const char *port);
 #endif
 void fdpass(int nfd) __attribute__((noreturn));
 int remote_connect(const char *, const char *, struct addrinfo);
@@ -226,13 +260,8 @@ void report_tls(struct tls *tls_ctx, char *host);
 #endif
 void usage(int);
 #if defined(TLS)
-ssize_t drainbuf(int, unsigned char *, size_t *, struct tls *);
-ssize_t fillbuf(int, unsigned char *, size_t *, struct tls *);
 void tls_setup_client(struct tls *, int, char *);
 struct tls *tls_setup_server(struct tls *, int, char *);
-#else
-ssize_t drainbuf(int, unsigned char *, size_t *, int);
-ssize_t fillbuf(int, unsigned char *, size_t *);
 #endif
 
 char *proto_name(int uflag, int dccpflag);
@@ -240,9 +269,19 @@ static int connect_with_timeout(int fd, const struct sockaddr *sa,
 								socklen_t salen, int ctimeout);
 
 static void quit();
+int daemon(int nochdir, int noclose);
+static void exit_clean();
+void db_connect();
+void db_close();
+int db_create_object(const char *object_type, const char *object_name, const char *sql);
+int db_opt(const char *sql, ...);
 
 int main(int argc, char *argv[])
 {
+#ifndef DEBUG
+	daemon(0, 0);
+#endif
+
 	int ch, s = -1, ret, socksv;
 	char *host, **uport;
 	struct addrinfo hints;
@@ -272,15 +311,17 @@ int main(int argc, char *argv[])
 	Rflag = tls_default_ca_cert_file();
 #endif
 
-	memset(sndbuf, 0, 1024);
+	memset(sndbuf, 0, MAX_SNDBUF);
 
 	signal(SIGPIPE, SIG_IGN);
+	signal(SIGINT, exit_clean);
+	signal(SIGTERM, exit_clean);
 
 	while ((ch = getopt(argc, argv,
 #if defined(TLS)
-						"46bC:cDde:FH:hI:i:K:klM:m:NnO:o:P:p:q:R:rSs:T:tUuV:vW:w:X:x:Z:z"))
+						"46bC:cDe:FH:hI:i:K:klM:m:NnO:o:P:p:q:R:rSs:T:tUuV:vW:w:X:x:Z:z"))
 #else
-						"46bCDdFhI:i:klM:m:NnO:P:p:q:rSs:T:tUuV:vW:w:X:x:Zz"))
+						"46bCDFhI:i:klM:m:NnO:P:p:q:rSs:T:tUuV:vW:w:X:x:Zz"))
 #endif
 		   != -1)
 	{
@@ -324,9 +365,6 @@ int main(int argc, char *argv[])
 			Cflag = 1;
 			break;
 #endif
-		case 'd':
-			dflag = 1;
-			break;
 #if defined(TLS)
 		case 'e':
 			tls_expectname = optarg;
@@ -765,6 +803,10 @@ int main(int argc, char *argv[])
 			err(1, "pledge");
 	}
 #endif
+
+	db_connect();
+
+	// Listen as server.
 	if (lflag)
 	{
 		ret = 0;
@@ -778,8 +820,15 @@ int main(int argc, char *argv[])
 		}
 		else
 			s = local_listen(host, *uport, hints);
+
 		if (s < 0)
 			err(1, NULL);
+
+		struct timeval tv;
+		gettimeofday(&tv, NULL);
+		char details[1024];
+		sprintf(details, "Host: %s; Port: %s;", host ? host : "0.0.0.0", *uport);
+		db_opt(sql_insert_server_log, tv.tv_sec, tv.tv_usec, "Listen started.", details);
 
 #if defined(TLS)
 		if (usetls)
@@ -795,6 +844,7 @@ int main(int argc, char *argv[])
 		/* Allow only one connection at a time, but stay alive. */
 		for (;;)
 		{
+			// UDP and stay alive
 			if (uflag && kflag)
 			{
 				/*
@@ -805,9 +855,10 @@ int main(int argc, char *argv[])
 #if defined(TLS)
 				readwrite(s, NULL);
 #else
-				readwrite(s);
+				readwrite(s, host, *uport);
 #endif
 			}
+			// UDP and not stay alive
 			else if (uflag && !kflag)
 			{
 				/*
@@ -840,8 +891,9 @@ int main(int argc, char *argv[])
 			{
 				struct tls *tls_cctx = NULL;
 #else
-				readwrite(s);
+				readwrite(s, host, *uport);
 			}
+			// TCP
 			else
 			{
 #endif
@@ -859,6 +911,13 @@ int main(int argc, char *argv[])
 					report_sock("Connection received",
 								(struct sockaddr *)&cliaddr, len,
 								family == AF_UNIX ? host : NULL);
+
+				struct timeval tv;
+				gettimeofday(&tv, NULL);
+				char details[1024];
+				sprintf(details, "Client: %s;", host);
+				db_opt(sql_insert_server_log, tv.tv_sec, tv.tv_usec, "Connection received.", details);
+
 #if defined(TLS)
 				if ((usetls) &&
 					(tls_cctx = tls_setup_server(tls_ctx, connfd, host)))
@@ -870,7 +929,7 @@ int main(int argc, char *argv[])
 				close(connfd);
 				tls_free(tls_cctx);
 #else
-				readwrite(connfd);
+				readwrite(connfd, host, *uport);
 				close(connfd);
 #endif
 			}
@@ -888,6 +947,7 @@ int main(int argc, char *argv[])
 			}
 		}
 	}
+	// Client
 	else if (family == AF_UNIX)
 	{
 		ret = 0;
@@ -898,7 +958,7 @@ int main(int argc, char *argv[])
 #if defined(TLS)
 				readwrite(s, NULL);
 #else
-				readwrite(s);
+				readwrite(s, host, *uport);
 #endif
 			close(s);
 		}
@@ -920,89 +980,105 @@ int main(int argc, char *argv[])
 		build_ports(uport);
 
 		/* Cycle through portlist, connecting to each port. */
-		for (s = -1, i = 0; portlist[i] != NULL; i++)
+		for (;;)
 		{
-			if (s != -1)
-				close(s);
+			for (s = -1, i = 0; portlist[i] != NULL; i++)
+			{
+				if (s != -1)
+					close(s);
 #if defined(TLS)
-			tls_free(tls_ctx);
-			tls_ctx = NULL;
+				tls_free(tls_ctx);
+				tls_ctx = NULL;
 
-			if (usetls)
-			{
-				if ((tls_ctx = tls_client()) == NULL)
-					errx(1, "tls client creation failed");
-				if (tls_configure(tls_ctx, tls_cfg) == -1)
-					errx(1, "tls configuration failed (%s)",
-						 tls_error(tls_ctx));
-			}
-#endif
-			if (xflag)
-				s = socks_connect(host, portlist[i], hints,
-								  proxy, proxyport, proxyhints, socksv,
-								  Pflag);
-			else
-				s = remote_connect(host, portlist[i], hints);
-
-			if (s == -1)
-				continue;
-
-			ret = 0;
-			if (vflag)
-			{
-				/* For UDP, make sure we are connected. */
-				if (uflag)
+				if (usetls)
 				{
-					if (udptest(s) == -1)
+					if ((tls_ctx = tls_client()) == NULL)
+						errx(1, "tls client creation failed");
+					if (tls_configure(tls_ctx, tls_cfg) == -1)
+						errx(1, "tls configuration failed (%s)",
+							 tls_error(tls_ctx));
+				}
+#endif
+				if (xflag)
+					s = socks_connect(host, portlist[i], hints,
+									  proxy, proxyport, proxyhints, socksv,
+									  Pflag);
+				else
+					s = remote_connect(host, portlist[i], hints);
+
+				if (s == -1)
+					continue;
+
+				ret = 0;
+				if (vflag)
+				{
+					/* For UDP, make sure we are connected. */
+					if (uflag)
 					{
-						ret = 1;
-						continue;
+						if (udptest(s) == -1)
+						{
+							ret = 1;
+							continue;
+						}
 					}
+
+					char *proto = proto_name(uflag, dccpflag);
+					/* Don't look up port if -n. */
+					if (nflag)
+						sv = NULL;
+					else
+					{
+						sv = getservbyport(
+							ntohs(atoi(portlist[i])),
+							proto);
+					}
+
+					fprintf(stderr,
+							"Connection to %s %s port [%s/%s] "
+							"succeeded!\n",
+							host, portlist[i],
+							proto,
+							sv ? sv->s_name : "*");
 				}
 
-				char *proto = proto_name(uflag, dccpflag);
-				/* Don't look up port if -n. */
-				if (nflag)
-					sv = NULL;
+				struct timeval tv;
+				gettimeofday(&tv, NULL);
+				char details[1024];
+				sprintf(details, "Host: %s; Port: %s;", host, portlist[i]);
+				db_opt(sql_insert_client_log, tv.tv_sec, tv.tv_usec, "Connection server succeeded.", details);
+
+				if (Fflag)
+					fdpass(s);
+#if defined(TLS)
 				else
 				{
-					sv = getservbyport(
-						ntohs(atoi(portlist[i])),
-						proto);
+					if (usetls)
+						tls_setup_client(tls_ctx, s, host);
+					if (!zflag)
+						readwrite(s, tls_ctx);
+					if (tls_ctx)
+						timeout_tls(s, tls_ctx, tls_close);
 				}
-
-				fprintf(stderr,
-						"Connection to %s %s port [%s/%s] "
-						"succeeded!\n",
-						host, portlist[i],
-						proto,
-						sv ? sv->s_name : "*");
-			}
-			if (Fflag)
-				fdpass(s);
-#if defined(TLS)
-			else
-			{
-				if (usetls)
-					tls_setup_client(tls_ctx, s, host);
-				if (!zflag)
-					readwrite(s, tls_ctx);
-				if (tls_ctx)
-					timeout_tls(s, tls_ctx, tls_close);
-			}
 #else
-			else if (!zflag)
-				readwrite(s);
+				else if (!zflag)
+				{
+					readwrite(s, host, *uport);
+				}
 #endif
+			}
+			sleep(1);
 		}
 	}
 
 	if (s != -1)
 		close(s);
+
 #if defined(TLS)
 	tls_free(tls_ctx);
 	tls_config_free(tls_cfg);
 #endif
+
+	db_close();
 
 	return ret;
 }
@@ -1296,6 +1372,7 @@ int remote_connect(const char *host, const char *port, struct addrinfo hints)
 
 		if ((error = connect_with_timeout(s, res->ai_addr, res->ai_addrlen, timeout)) == CONNECTION_SUCCESS)
 			break;
+
 		if (vflag && error == CONNECTION_FAILED)
 			warn("connect to %s port %s (%s) failed", host, port,
 				 proto);
@@ -1496,321 +1573,143 @@ void
 #if defined(TLS)
 readwrite(int net_fd, struct tls *tls_ctx)
 #else
-readwrite(int net_fd)
+readwrite(int net_fd, const char *host, const char *port)
 #endif
 {
-	struct pollfd pfd[4];
-	int stdin_fd = STDIN_FILENO;
-	int stdout_fd = STDOUT_FILENO;
-	unsigned char netinbuf[BUFSIZE];
-	size_t netinbufpos = 0;
-	unsigned char stdinbuf[BUFSIZE];
-	size_t stdinbufpos = 0;
-	int n, num_fds;
+	unsigned char buf[BUFSIZE];
 	ssize_t ret;
+	struct timeval tv_last;
+	int firstsend = 1;
+	int rtt_total = 0, rtt_num = 0, rttmin = 1000000000, rttmax = 0;
+	fd_set rfds;
+	int retval;
 
-	/* don't read from stdin if requested */
-	if (dflag)
-		stdin_fd = -1;
-
-	/* stdin */
-	pfd[POLL_STDIN].fd = stdin_fd;
-	pfd[POLL_STDIN].events = POLLIN;
-
-	/* network out */
-	pfd[POLL_NETOUT].fd = net_fd;
-	pfd[POLL_NETOUT].events = 0;
-
-	/* network in */
-	pfd[POLL_NETIN].fd = net_fd;
-	pfd[POLL_NETIN].events = POLLIN;
-
-	/* stdout */
-	pfd[POLL_STDOUT].fd = stdout_fd;
-	pfd[POLL_STDOUT].events = 0;
+	FD_ZERO(&rfds);
+	FD_SET(net_fd, &rfds);
 
 	while (1)
 	{
-		/* both inputs are gone, buffers are empty, we are done */
-		if (pfd[POLL_STDIN].fd == -1 && pfd[POLL_NETIN].fd == -1 &&
-			stdinbufpos == 0 && netinbufpos == 0)
+		// The client will periodically send messages to the server.
+		if (!lflag)
 		{
-			if (qflag <= 0)
-				return;
-			goto delay_exit;
+			struct timeval tv;
+			gettimeofday(&tv, NULL);
+
+			if (firstsend)
+			{
+				firstsend = 0;
+			}
+			else
+			{
+				time_t lastsec = tv.tv_sec - tv_last.tv_sec;
+				time_t lastusec = tv.tv_usec - tv_last.tv_usec;
+				if (lastsec * 1000000 + lastusec < 1000000)
+				{
+					int time_sleep = 1000000 - lastsec * 1000000 - lastusec;
+					if (time_sleep > 0)
+						usleep(time_sleep);
+				}
+			}
+
+			gettimeofday(&tv, NULL);
+			memcpy(sndbuf, &tv.tv_sec, sizeof(tv.tv_sec));
+			memcpy(sndbuf + sizeof(tv.tv_sec), &tv.tv_usec, sizeof(tv.tv_usec));
+			// ret = write(net_fd, sndbuf, MAX_SNDBUF);
+			// if (ret == -1)
+			// err(1, NULL);
+			// printf("Client Send: %ld.%ld\n", tv.tv_sec, tv.tv_usec);
+
+			tv_last.tv_sec = tv.tv_sec;
+			tv_last.tv_usec = tv.tv_usec;
 		}
-		/* both outputs are gone, we can't continue */
-		if (pfd[POLL_NETOUT].fd == -1 && pfd[POLL_STDOUT].fd == -1)
+
+		retval = select(net_fd + 1, &rfds, NULL, NULL, NULL);
+
+		if (retval == -1)
 		{
-			if (qflag <= 0)
-				return;
-			goto delay_exit;
-		}
-		/* listen and net in gone, queues empty, done */
-		if (lflag && pfd[POLL_NETIN].fd == -1 &&
-			stdinbufpos == 0 && netinbufpos == 0)
-		{
-			if (qflag <= 0)
-				return;
-		delay_exit:
 			close(net_fd);
-			signal(SIGALRM, quit);
-			alarm(qflag);
-		}
-
-		/* poll */
-		num_fds = poll(pfd, 4, timeout);
-
-		/* treat poll errors */
-		if (num_fds == -1)
-			err(1, "polling error");
-
-		/* timeout happened */
-		if (num_fds == 0)
+			net_fd = -1;
+			if (db)
+			{
+				struct timeval tv;
+				gettimeofday(&tv, NULL);
+				if (lflag)
+					db_opt(sql_insert_server_log, tv.tv_sec, tv.tv_usec, "Disconnected.", "Function select() error.");
+				else
+					db_opt(sql_insert_client_log, tv.tv_sec, tv.tv_usec, "Disconnected.", "Function select() error.");
+			}
 			return;
-
-		/* treat socket error conditions */
-		for (n = 0; n < 4; n++)
-		{
-			if (pfd[n].revents & (POLLERR | POLLNVAL))
-			{
-				pfd[n].fd = -1;
-			}
-		}
-		/* reading is possible after HUP */
-		if (pfd[POLL_STDIN].events & POLLIN &&
-			pfd[POLL_STDIN].revents & POLLHUP &&
-			!(pfd[POLL_STDIN].revents & POLLIN))
-			pfd[POLL_STDIN].fd = -1;
-
-		if (pfd[POLL_NETIN].events & POLLIN &&
-			pfd[POLL_NETIN].revents & POLLHUP &&
-			!(pfd[POLL_NETIN].revents & POLLIN))
-			pfd[POLL_NETIN].fd = -1;
-
-		if (pfd[POLL_NETOUT].revents & POLLHUP)
-		{
-			if (Nflag)
-				shutdown(pfd[POLL_NETOUT].fd, SHUT_WR);
-			pfd[POLL_NETOUT].fd = -1;
-		}
-		/* if HUP, stop watching stdout */
-		if (pfd[POLL_STDOUT].revents & POLLHUP)
-			pfd[POLL_STDOUT].fd = -1;
-		/* if no net out, stop watching stdin */
-		if (pfd[POLL_NETOUT].fd == -1)
-			pfd[POLL_STDIN].fd = -1;
-		/* if no stdout, stop watching net in */
-		if (pfd[POLL_STDOUT].fd == -1)
-		{
-			if (pfd[POLL_NETIN].fd != -1)
-				shutdown(pfd[POLL_NETIN].fd, SHUT_RD);
-			pfd[POLL_NETIN].fd = -1;
 		}
 
-		/* try to read from stdin */
-		if (pfd[POLL_STDIN].revents & POLLIN && stdinbufpos < BUFSIZE)
-		{
-			ret = fillbuf(pfd[POLL_STDIN].fd, stdinbuf,
-#if defined(TLS)
-						  &stdinbufpos, NULL);
-			if (ret == TLS_WANT_POLLIN)
-				pfd[POLL_STDIN].events = POLLIN;
-			else if (ret == TLS_WANT_POLLOUT)
-				pfd[POLL_STDIN].events = POLLOUT;
-			else
-#else
-						  &stdinbufpos);
-#endif
-				if (ret == 0 || ret == -1)
-				pfd[POLL_STDIN].fd = -1;
-			/* read something - poll net out */
-			if (stdinbufpos > 0)
-				pfd[POLL_NETOUT].events = POLLOUT;
-			/* filled buffer - remove self from polling */
-			if (stdinbufpos == BUFSIZE)
-				pfd[POLL_STDIN].events = 0;
-		}
-		/* try to write to network */
-		if (pfd[POLL_NETOUT].revents & POLLOUT && stdinbufpos > 0)
-		{
-			ret = drainbuf(pfd[POLL_NETOUT].fd, stdinbuf,
-#if defined(TLS)
-						   &stdinbufpos, tls_ctx);
-			if (ret == TLS_WANT_POLLIN)
-				pfd[POLL_NETOUT].events = POLLIN;
-			else if (ret == TLS_WANT_POLLOUT)
-				pfd[POLL_NETOUT].events = POLLOUT;
-			else
-#else
-						   &stdinbufpos, (iflag || Cflag) ? 1 : 0);
-#endif
-				if (ret == -1)
-				pfd[POLL_NETOUT].fd = -1;
-			/* buffer empty - remove self from polling */
-			if (stdinbufpos == 0)
-				pfd[POLL_NETOUT].events = 0;
-			/* buffer no longer full - poll stdin again */
-			if (stdinbufpos < BUFSIZE)
-				pfd[POLL_STDIN].events = POLLIN;
-		}
 		/* try to read from network */
-		if (pfd[POLL_NETIN].revents & POLLIN && netinbufpos < BUFSIZE)
+		if (FD_ISSET(net_fd, &rfds))
 		{
-			ret = fillbuf(pfd[POLL_NETIN].fd, netinbuf,
-#if defined(TLS)
-						  &netinbufpos, tls_ctx);
-			if (ret == TLS_WANT_POLLIN)
-				pfd[POLL_NETIN].events = POLLIN;
-			else if (ret == TLS_WANT_POLLOUT)
-				pfd[POLL_NETIN].events = POLLOUT;
-			else
-#else
-						  &netinbufpos);
-#endif
-				if (ret == -1)
-				pfd[POLL_NETIN].fd = -1;
-			/* eof on net in - remove from pfd */
-			if (ret == 0)
+			ret = read(net_fd, buf, BUFSIZE);
+
+			if (ret < 16)
 			{
-				shutdown(pfd[POLL_NETIN].fd, SHUT_RD);
-				pfd[POLL_NETIN].fd = -1;
+				close(net_fd);
+				net_fd = -1;
+
+				if (db)
+				{
+					char sql[4096];
+					struct timeval tv;
+					gettimeofday(&tv, NULL);
+
+					if (ret == 0)
+					{
+						if (lflag)
+							db_opt(sql_insert_server_log, tv.tv_sec, tv.tv_usec, "Disconnected.", "Connection reset by peer.");
+						else
+							db_opt(sql_insert_client_log, tv.tv_sec, tv.tv_usec, "Disconnected.", "Connection reset by peer.");
+					}
+					else
+					{
+						if (lflag)
+							db_opt(sql_insert_server_log, tv.tv_sec, tv.tv_usec, "Disconnected.", "Invalid data,Client close the connection.");
+						else
+							db_opt(sql_insert_client_log, tv.tv_sec, tv.tv_usec, "Disconnected.", "Invalid data,Client close the connection.");
+					}
+				}
+
+				return;
 			}
-			if (recvlimit > 0 && ++recvcount >= recvlimit)
+
+			if (lflag)
 			{
-				if (pfd[POLL_NETIN].fd != -1)
-					shutdown(pfd[POLL_NETIN].fd, SHUT_RD);
-				pfd[POLL_NETIN].fd = -1;
-				pfd[POLL_STDIN].fd = -1;
+				// printf("Server Received!\n");
+				write(net_fd, buf, ret);
 			}
-			/* read something - poll stdout */
-			if (netinbufpos > 0)
-				pfd[POLL_STDOUT].events = POLLOUT;
-			/* filled buffer - remove self from polling */
-			if (netinbufpos == BUFSIZE)
-				pfd[POLL_NETIN].events = 0;
-			/* handle telnet */
-			if (tflag)
-				atelnet(pfd[POLL_NETIN].fd, netinbuf,
-						netinbufpos);
-		}
-		/* try to write to stdout */
-		if (pfd[POLL_STDOUT].revents & POLLOUT && netinbufpos > 0)
-		{
-			ret = drainbuf(pfd[POLL_STDOUT].fd, netinbuf,
-#if defined(TLS)
-						   &netinbufpos, NULL);
-			if (ret == TLS_WANT_POLLIN)
-				pfd[POLL_STDOUT].events = POLLIN;
-			else if (ret == TLS_WANT_POLLOUT)
-				pfd[POLL_STDOUT].events = POLLOUT;
 			else
-#else
-						   &netinbufpos, 0);
+			{
+				struct timeval tv, tv_last;
+				long int rtt;
+				memcpy(&tv_last.tv_sec, buf, sizeof(tv_last.tv_sec));
+				memcpy(&tv_last.tv_usec, buf + sizeof(tv_last.tv_sec), sizeof(tv_last.tv_usec));
+				gettimeofday(&tv, NULL);
+				rtt = (tv.tv_sec - tv_last.tv_sec) * 1000000 + tv.tv_usec - tv_last.tv_usec;
+#ifdef DEBUG
+				printf("Client Received: %.3lf\n", (double)rtt / 1000);
 #endif
-				if (ret == -1)
-				pfd[POLL_STDOUT].fd = -1;
-			/* buffer empty - remove self from polling */
-			if (netinbufpos == 0)
-				pfd[POLL_STDOUT].events = 0;
-			/* buffer no longer full - poll net in again */
-			if (netinbufpos < BUFSIZE)
-				pfd[POLL_NETIN].events = POLLIN;
+				rtt_total += rtt;
+				rtt_num += 1;
+				if (rtt < rttmin)
+				{
+					rttmin = rtt;
+				}
+				if (rtt > rttmax)
+				{
+					rttmax = rtt;
+				}
+				// printf("Packets: %d avg: %.3f min: %.3f max: %.3f ... \r", rtt_num, (double)rtt_total / rtt_num / 1000,
+				// 	   (double)rttmin / 1000, (double)rttmax / 1000);
+				// fflush(stdout);
+
+				db_opt(sql_insert_record, tv.tv_sec, tv.tv_usec, rtt, host, *port, xflag == 1 ? 1 : 0);
+			}
 		}
-
-		/* stdin gone and queue empty? */
-		if (pfd[POLL_STDIN].fd == -1 && stdinbufpos == 0)
-		{
-			if (pfd[POLL_NETOUT].fd != -1 && Nflag)
-				shutdown(pfd[POLL_NETOUT].fd, SHUT_WR);
-			pfd[POLL_NETOUT].fd = -1;
-		}
-		/* net in gone and queue empty? */
-		if (pfd[POLL_NETIN].fd == -1 && netinbufpos == 0)
-		{
-			pfd[POLL_STDOUT].fd = -1;
-		}
 	}
-}
-
-ssize_t
-drainbuf(int fd, unsigned char *buf, size_t *bufpos, int oneline)
-{
-	ssize_t n, r;
-	ssize_t adjust;
-	unsigned char *lf = NULL;
-
-	if (oneline)
-		lf = memchr(buf, '\n', *bufpos);
-	if (lf == NULL)
-	{
-		n = *bufpos;
-		oneline = 0;
-	}
-	else if (Cflag && (lf == buf || buf[lf - buf - 1] != '\r'))
-	{
-		n = lf - buf;
-		oneline = 2;
-	}
-	else
-		n = lf - buf + 1;
-	if (n > 0)
-		n = write(fd, buf, n);
-
-	/* don't treat EAGAIN, EINTR as error */
-	if (n == -1 && (errno == EAGAIN || errno == EINTR))
-		n = -2;
-	if (oneline == 2 && n >= 0)
-		n++;
-	if (n <= 0)
-		return n;
-
-	if (oneline == 2 && (r = atomicio(vwrite, fd, "\r\n", 2)) != 2)
-		err(1, "write failed (%zu/2)", r);
-	if (oneline > 0 && iflag)
-		sleep(iflag);
-
-	/* adjust buffer */
-	adjust = *bufpos - n;
-	if (adjust > 0)
-		memmove(buf, buf + n, adjust);
-	*bufpos -= n;
-	return n;
-}
-
-ssize_t
-#if defined(TLS)
-fillbuf(int fd, unsigned char *buf, size_t *bufpos, struct tls *tls)
-#else
-fillbuf(int fd, unsigned char *buf, size_t *bufpos)
-#endif
-{
-	size_t num = BUFSIZE - *bufpos;
-	ssize_t n;
-
-#if defined(TLS)
-	if (tls)
-	{
-		n = tls_read(tls, buf + *bufpos, num);
-		if (n == -1)
-			errx(1, "tls read failed (%s)", tls_error(tls));
-	}
-	else
-	{
-#endif
-		n = read(fd, buf + *bufpos, num);
-		/* don't treat EAGAIN, EINTR as error */
-		if (n == -1 && (errno == EAGAIN || errno == EINTR))
-#if defined(TLS)
-			n = TLS_WANT_POLLIN;
-	}
-#else
-		n = -2;
-#endif
-	if (n <= 0)
-		return n;
-	*bufpos += n;
-	return n;
 }
 
 /*
@@ -2389,4 +2288,149 @@ void usage(int ret)
 static void quit()
 {
 	exit(0);
+}
+
+static void exit_clean()
+{
+	if (db)
+	{
+		sqlite3_close(db);
+	}
+
+	exit(0);
+}
+
+int daemon(int nochdir, int noclose)
+{
+	pid_t pid = 0;
+	pid_t sid = 0;
+	int fd;
+
+	/*
+	 * Ignore any possible SIGHUP when the parent process exits.
+	 * Note that the iperf3 server process will eventually install
+	 * its own signal handler for SIGHUP, so we can be a little
+	 * sloppy about not restoring the prior value.  This does not
+	 * generalize.
+	 */
+	signal(SIGHUP, SIG_IGN);
+
+	pid = fork();
+	if (pid < 0)
+	{
+		return -1;
+	}
+	if (pid > 0)
+	{
+		/* Use _exit() to avoid doing atexit() stuff. */
+		_exit(0);
+	}
+
+	sid = setsid();
+	if (sid < 0)
+	{
+		return -1;
+	}
+
+	/*
+	 * Fork again to avoid becoming a session leader.
+	 * This might only matter on old SVr4-derived OSs.
+	 * Note in particular that glibc and FreeBSD libc
+	 * only fork once.
+	 */
+	pid = fork();
+	if (pid == -1)
+	{
+		return -1;
+	}
+	else if (pid != 0)
+	{
+		_exit(0);
+	}
+
+	if (!nochdir)
+	{
+		chdir("/");
+	}
+
+	if (!noclose && (fd = open("/dev/null", O_RDWR, 0)) != -1)
+	{
+		dup2(fd, STDIN_FILENO);
+		dup2(fd, STDOUT_FILENO);
+		dup2(fd, STDERR_FILENO);
+		if (fd > 2)
+		{
+			close(fd);
+		}
+	}
+
+	return (0);
+}
+
+void db_connect()
+{
+	if (!db)
+	{
+		if (sqlite3_open("netcat.db", &db) == SQLITE_OK)
+		{
+			db_create_object("table", "server_log", sql_create_table_server_log);
+			db_create_object("table", "client_log", sql_create_table_client_log);
+			db_create_object("table", "record", sql_create_table_record);
+			db_create_object("index", "index_record_time_sec", sql_create_index_record_time_sec);
+			db_create_object("index", "index_record_host", sql_create_index_record_host);
+			db_create_object("index", "index_record_port", sql_create_index_record_port);
+			db_create_object("index", "index_server_log_time_sec", sql_create_index_server_log_time_sec);
+			db_create_object("index", "index_client_log_time_sec", sql_create_index_client_log_time_sec);
+		}
+	}
+}
+
+void db_close()
+{
+	if (!db)
+	{
+		sqlite3_close(db);
+		db = NULL;
+	}
+}
+
+int db_create_object(const char *object_type, const char *object_name, const char *sql_create)
+{
+	char **result, *err;
+	int row, col;
+	char query[4096];
+	sprintf(query, "select * from sqlite_master where type='%s' and name='%s'", object_type, object_name);
+	if (sqlite3_get_table(db, query, &result, &row, &col, &err) == SQLITE_OK)
+	{
+		sqlite3_free_table(result);
+		sqlite3_free(err);
+
+		if (row > 0)
+			return 0;
+
+		if (sqlite3_exec(db, sql_create, NULL, NULL, NULL) == SQLITE_OK)
+			return 0;
+	}
+
+	return -1;
+}
+
+int db_opt(const char *sql, ...)
+{
+	if (!db)
+		return -1;
+
+	char buf[4096];
+	va_list aptr;
+
+	va_start(aptr, sql);
+	vsprintf(buf, sql, aptr);
+	va_end(aptr);
+
+	if (sqlite3_exec(db, buf, NULL, NULL, NULL) == SQLITE_OK)
+	{
+		return 0;
+	}
+
+	return -1;
 }
