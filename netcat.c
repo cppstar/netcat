@@ -274,7 +274,7 @@ static void exit_clean();
 void db_connect();
 void db_close();
 int db_create_object(const char *object_type, const char *object_name, const char *sql);
-int db_opt(const char *sql, ...);
+int db_execute(const char *sql, ...);
 
 int main(int argc, char *argv[])
 {
@@ -828,7 +828,7 @@ int main(int argc, char *argv[])
 		gettimeofday(&tv, NULL);
 		char details[1024];
 		sprintf(details, "Host: %s; Port: %s;", host ? host : "0.0.0.0", *uport);
-		db_opt(sql_insert_server_log, tv.tv_sec, tv.tv_usec, "Listen started.", details);
+		db_execute(sql_insert_server_log, tv.tv_sec, tv.tv_usec, "Listen started.", details);
 
 #if defined(TLS)
 		if (usetls)
@@ -916,7 +916,7 @@ int main(int argc, char *argv[])
 				gettimeofday(&tv, NULL);
 				char details[1024];
 				sprintf(details, "Client: %s;", host);
-				db_opt(sql_insert_server_log, tv.tv_sec, tv.tv_usec, "Connection received.", details);
+				db_execute(sql_insert_server_log, tv.tv_sec, tv.tv_usec, "Connection received.", details);
 
 #if defined(TLS)
 				if ((usetls) &&
@@ -1045,7 +1045,7 @@ int main(int argc, char *argv[])
 				gettimeofday(&tv, NULL);
 				char details[1024];
 				sprintf(details, "Host: %s; Port: %s;", host, portlist[i]);
-				db_opt(sql_insert_client_log, tv.tv_sec, tv.tv_usec, "Connect server succeeded.", details);
+				db_execute(sql_insert_client_log, tv.tv_sec, tv.tv_usec, "Connect server succeeded.", details);
 
 				if (Fflag)
 					fdpass(s);
@@ -1634,9 +1634,9 @@ readwrite(int net_fd, const char *host, const char *port)
 				struct timeval tv;
 				gettimeofday(&tv, NULL);
 				if (lflag)
-					db_opt(sql_insert_server_log, tv.tv_sec, tv.tv_usec, "Disconnected.", "Function select() error.");
+					db_execute(sql_insert_server_log, tv.tv_sec, tv.tv_usec, "Disconnected.", "Function select() error.");
 				else
-					db_opt(sql_insert_client_log, tv.tv_sec, tv.tv_usec, "Disconnected.", "Function select() error.");
+					db_execute(sql_insert_client_log, tv.tv_sec, tv.tv_usec, "Disconnected.", "Function select() error.");
 			}
 			return;
 		}
@@ -1660,16 +1660,16 @@ readwrite(int net_fd, const char *host, const char *port)
 					if (ret == 0)
 					{
 						if (lflag)
-							db_opt(sql_insert_server_log, tv.tv_sec, tv.tv_usec, "Disconnected.", "Connection reset by peer.");
+							db_execute(sql_insert_server_log, tv.tv_sec, tv.tv_usec, "Disconnected.", "Connection reset by peer.");
 						else
-							db_opt(sql_insert_client_log, tv.tv_sec, tv.tv_usec, "Disconnected.", "Connection reset by peer.");
+							db_execute(sql_insert_client_log, tv.tv_sec, tv.tv_usec, "Disconnected.", "Connection reset by peer.");
 					}
 					else
 					{
 						if (lflag)
-							db_opt(sql_insert_server_log, tv.tv_sec, tv.tv_usec, "Disconnected.", "Invalid data,Client close the connection.");
+							db_execute(sql_insert_server_log, tv.tv_sec, tv.tv_usec, "Disconnected.", "Invalid data,Client close the connection.");
 						else
-							db_opt(sql_insert_client_log, tv.tv_sec, tv.tv_usec, "Disconnected.", "Invalid data,Client close the connection.");
+							db_execute(sql_insert_client_log, tv.tv_sec, tv.tv_usec, "Disconnected.", "Invalid data,Client close the connection.");
 					}
 				}
 
@@ -1707,7 +1707,7 @@ readwrite(int net_fd, const char *host, const char *port)
 				// 	   (double)rttmin / 1000, (double)rttmax / 1000);
 				// fflush(stdout);
 
-				db_opt(sql_insert_record, tv.tv_sec, tv.tv_usec, rtt, host, port, xflag == 1 ? 1 : 0);
+				db_execute(sql_insert_record, tv.tv_sec, tv.tv_usec, rtt, host, port, xflag == 1 ? 1 : 0);
 			}
 		}
 	}
@@ -2416,7 +2416,7 @@ int db_create_object(const char *object_type, const char *object_name, const cha
 	return -1;
 }
 
-int db_opt(const char *sql, ...)
+int db_execute(const char *sql, ...)
 {
 	if (!db)
 		return -1;

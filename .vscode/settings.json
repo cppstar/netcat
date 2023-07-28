@@ -2,7 +2,8 @@
     "files.associations": {
         "time.h": "c",
         "errno.h": "c",
-        "errno-base.h": "c"
+        "errno-base.h": "c",
+        "sqlite3.h": "c"
     },
     "C_Cpp.vcFormat.newLine.beforeOpenBrace.block": "sameLine",
     "C_Cpp.vcFormat.newLine.beforeOpenBrace.function": "sameLine",
