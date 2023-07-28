@@ -1045,7 +1045,7 @@ int main(int argc, char *argv[])
 				gettimeofday(&tv, NULL);
 				char details[1024];
 				sprintf(details, "Host: %s; Port: %s;", host, portlist[i]);
-				db_opt(sql_insert_client_log, tv.tv_sec, tv.tv_usec, "Connection server succeeded.", details);
+				db_opt(sql_insert_client_log, tv.tv_sec, tv.tv_usec, "Connect server succeeded.", details);
 
 				if (Fflag)
 					fdpass(s);
@@ -1614,9 +1614,9 @@ readwrite(int net_fd, const char *host, const char *port)
 			gettimeofday(&tv, NULL);
 			memcpy(sndbuf, &tv.tv_sec, sizeof(tv.tv_sec));
 			memcpy(sndbuf + sizeof(tv.tv_sec), &tv.tv_usec, sizeof(tv.tv_usec));
-			// ret = write(net_fd, sndbuf, MAX_SNDBUF);
-			// if (ret == -1)
-			// err(1, NULL);
+			ret = write(net_fd, sndbuf, MAX_SNDBUF);
+			if (ret == -1)
+				err(1, NULL);
 			// printf("Client Send: %ld.%ld\n", tv.tv_sec, tv.tv_usec);
 
 			tv_last.tv_sec = tv.tv_sec;
@@ -1689,6 +1689,7 @@ readwrite(int net_fd, const char *host, const char *port)
 				memcpy(&tv_last.tv_usec, buf + sizeof(tv_last.tv_sec), sizeof(tv_last.tv_usec));
 				gettimeofday(&tv, NULL);
 				rtt = (tv.tv_sec - tv_last.tv_sec) * 1000000 + tv.tv_usec - tv_last.tv_usec;
+
 #ifdef DEBUG
 				printf("Client Received: %.3lf\n", (double)rtt / 1000);
 #endif
@@ -1706,7 +1707,7 @@ readwrite(int net_fd, const char *host, const char *port)
 				// 	   (double)rttmin / 1000, (double)rttmax / 1000);
 				// fflush(stdout);
 
-				db_opt(sql_insert_record, tv.tv_sec, tv.tv_usec, rtt, host, *port, xflag == 1 ? 1 : 0);
+				db_opt(sql_insert_record, tv.tv_sec, tv.tv_usec, rtt, host, port, xflag == 1 ? 1 : 0);
 			}
 		}
 	}
