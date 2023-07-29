@@ -10,8 +10,10 @@
             "request": "launch",
             "program": "${workspaceFolder}/nc",
             "args": [
-                "-vn",
-                "127.0.0.1",
+                "-lkvn",
+                // "-vn",
+                // "141.147.154.163",
+                // "127.0.0.1",
                 "8888"
             ],
             "stopAtEntry": false,

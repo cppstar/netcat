@@ -134,14 +134,13 @@
 #define UDP_SCAN_TIMEOUT 3 /* Seconds */
 
 struct netmsg_header {
-  __uint8_t version;
+  __uint32_t version;
   __uint32_t length;
   __uint32_t crc32;
 };
 
 /* Command Line Options */
 int bflag;          /* Allow Broadcast */
-int dflag;          /* detached, no stdin */
 int Fflag;          /* fdpass sock to stdout */
 unsigned int iflag; /* Interval Flag */
 int kflag;          /* More than one connect */
@@ -164,6 +163,7 @@ int Iflag;          /* TCP receive buffer size */
 int Oflag;          /* TCP send buffer size */
 int Sflag;          /* TCP MD5 signature option */
 int Tflag = -1;     /* IP Type of Service */
+int dflag = 0;      /* Daemon flag */
 int rtableid = -1;
 
 #if defined(TLS)
@@ -298,10 +298,6 @@ int db_execute(const char *sql, ...);
 uint32_t crc32(const void *buf, size_t size);
 
 int main(int argc, char *argv[]) {
-#ifndef DEBUG
-  daemon(0, 0);
-#endif
-
   int ch, s = -1, ret, socksv;
   char *host, **uport;
   struct addrinfo hints;
@@ -320,6 +316,7 @@ int main(int argc, char *argv[]) {
   struct tls *tls_ctx = NULL;
 #endif
   uint32_t protocols;
+  struct timeval tv;
 
   ret = 1;
   socksv = 5;
@@ -334,14 +331,15 @@ int main(int argc, char *argv[]) {
   signal(SIGINT, exit_clean);
   signal(SIGTERM, exit_clean);
 
-  while ((ch = getopt(
-              argc, argv,
+  while (
+      (ch = getopt(
+           argc, argv,
 #if defined(TLS)
-              "46bC:cDe:FH:hI:i:K:klM:m:NnO:o:P:p:q:R:rSs:T:tUuV:vW:w:X:x:Z:z"))
+           "46bC:cDde:FH:hI:i:K:klM:m:NnO:o:P:p:q:R:rSs:T:tUuV:vW:w:X:x:Z:z"))
 #else
-              "46bCDFhI:i:klM:m:NnO:P:p:q:rSs:T:tUuV:vW:w:X:x:Zz"))
+           "46bCDdFhI:i:klM:m:NnO:P:p:q:rSs:T:tUuV:vW:w:X:x:Zz"))
 #endif
-         != -1) {
+      != -1) {
     switch (ch) {
       case '4':
         family = AF_INET;
@@ -500,6 +498,9 @@ int main(int argc, char *argv[]) {
       case 'D':
         Dflag = 1;
         break;
+      case 'd':
+        dflag = 1;
+        break;
       case 'I':
         Iflag = strtonum(optarg, 1, 65536 << 14, &errstr);
         if (errstr != NULL)
@@ -546,6 +547,11 @@ int main(int argc, char *argv[]) {
         usage(1);
     }
   }
+
+  if (dflag) {
+    daemon(0, 0);
+  }
+
   argc -= optind;
   argv += optind;
 
@@ -745,7 +751,6 @@ int main(int argc, char *argv[]) {
 
     if (s < 0) err(1, NULL);
 
-    struct timeval tv;
     gettimeofday(&tv, NULL);
     char details[1024];
     sprintf(details, "Host: %s; Port: %s;", host ? host : "0.0.0.0", *uport);
@@ -820,7 +825,6 @@ int main(int argc, char *argv[]) {
           report_sock("Connection received", (struct sockaddr *)&cliaddr, len,
                       family == AF_UNIX ? host : NULL);
 
-        struct timeval tv;
         gettimeofday(&tv, NULL);
         char details[1024];
         sprintf(details, "Client: %s;", host);
@@ -921,7 +925,6 @@ int main(int argc, char *argv[]) {
                   host, portlist[i], proto, sv ? sv->s_name : "*");
         }
 
-        struct timeval tv;
         gettimeofday(&tv, NULL);
         char details[1024];
         sprintf(details, "Host: %s; Port: %s;", host, portlist[i]);
@@ -1399,13 +1402,17 @@ readwrite(int net_fd)
     if (!lflag) {
       gettimeofday(&tv, NULL);
       nmhdr.version = 1;
-      nmhdr.length = packet_size;
+      nmhdr.length = packet_size - sizeof(nmhdr);
       crc32_val = crc32(&nmhdr, sizeof(nmhdr) - sizeof(crc32_val));
       nmhdr.crc32 = crc32_val;
       memcpy(buf, &nmhdr, sizeof(nmhdr));
       memcpy(buf + sizeof(nmhdr), &tv.tv_sec, sizeof(tv.tv_sec));
       memcpy(buf + sizeof(nmhdr) + sizeof(tv.tv_sec), &tv.tv_usec,
              sizeof(tv.tv_usec));
+      crc32_val = crc32(buf + sizeof(nmhdr),
+                        packet_size - sizeof(nmhdr) - sizeof(crc32_val));
+      memcpy(buf + packet_size - sizeof(crc32_val), &crc32_val,
+             sizeof(crc32_val));
       ret = write(net_fd, buf, packet_size);
       if (ret == -1) {
         close(net_fd);
@@ -1432,6 +1439,7 @@ readwrite(int net_fd)
     if (FD_ISSET(net_fd, &rfds)) {
       ret = read(net_fd, buf, sizeof(nmhdr));
 
+      memcpy(&nmhdr, buf, sizeof(nmhdr));
       if (ret < sizeof(nmhdr) ||
           crc32(buf, sizeof(nmhdr) - sizeof(nmhdr.crc32)) != nmhdr.crc32) {
         gettimeofday(&tv, NULL);
