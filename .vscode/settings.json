@@ -3,7 +3,14 @@
         "time.h": "c",
         "errno.h": "c",
         "errno-base.h": "c",
-        "sqlite3.h": "c"
+        "sqlite3.h": "c",
+        "ctype.h": "c",
+        "inet.h": "c",
+        "unistd.h": "c",
+        "features.h": "c",
+        "stdlib.h": "c",
+        "stdint.h": "c",
+        "stdint-gcc.h": "c"
     },
     "C_Cpp.vcFormat.newLine.beforeOpenBrace.block": "sameLine",
     "C_Cpp.vcFormat.newLine.beforeOpenBrace.function": "sameLine",
