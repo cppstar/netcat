@@ -297,6 +297,8 @@ int db_create_object(const char *object_type, const char *object_name,
                      const char *sql);
 int db_execute(const char *sql, ...);
 uint32_t crc32(const void *buf, size_t size);
+ssize_t send_data(int __fd, const void *__buf, size_t __n);
+ssize_t recv_data(int __fd, const void *__buf, size_t __n);
 
 int main(int argc, char *argv[]) {
   int ch, s = -1, ret, socksv;
@@ -349,7 +351,8 @@ int main(int argc, char *argv[]) {
         family = AF_INET6;
         break;
       case 'g':
-        gflag = strtonum(optarg, sizeof(__time_t)*2+sizeof(__int32_t), 60000, &errstr);
+        gflag = strtonum(optarg, sizeof(__time_t) * 2 + sizeof(__int32_t),
+                         60000, &errstr);
         if (errstr) errx(1, "interval %s: %s", errstr, optarg);
         packet_size = gflag;
         break;
@@ -1423,16 +1426,16 @@ readwrite(int net_fd)
              sizeof(crc32_val));
       ret = write(net_fd, buf, packet_size);
       if (ret == -1) {
-        sprintf(details, "Close connection: write() error,errno: %d, %s.",
-                errno, strerror(errno));
+        sprintf(details, "Close connection: write() error,errno: %d, %s. %s:%d",
+                errno, strerror(errno), __FILE__, __LINE__);
         goto rw_err_hand_quit;
       }
     }
 
     ret = select(net_fd + 1, &rfds, NULL, NULL, NULL);
     if (ret == -1) {
-      sprintf(details, "Close connection: select() error,errno: %d, %s.", errno,
-              strerror(errno));
+      sprintf(details, "Close connection: select() error,errno: %d, %s. %s:%d", errno,
+              strerror(errno), __FILE__, __LINE__);
       goto rw_err_hand_quit;
     }
 
@@ -1441,22 +1444,22 @@ readwrite(int net_fd)
       // Read packet header.
       ret = read(net_fd, buf, sizeof(nmhdr));
       if (ret < sizeof(nmhdr) || ret <= 0) {
-        sprintf(details, "Close connection: read() error,errno: %d, %s.", errno,
-                strerror(errno));
+        sprintf(details, "Close connection: read() error,errno: %d, %s. %s:%d", errno,
+                strerror(errno), __FILE__, __LINE__);
         goto rw_err_hand_quit;
       }
 
       memcpy(&nmhdr, buf, sizeof(nmhdr));
       if (crc32(buf, sizeof(nmhdr) - sizeof(nmhdr.crc32)) != nmhdr.crc32) {
-        sprintf(details, "Close connection: invalid data,header crc32 error.");
+        sprintf(details, "Close connection: invalid data,header crc32 error. %s:%d", __FILE__, __LINE__);
         goto rw_err_hand_quit;
       }
 
       // Read packet full data.
       ret = read(net_fd, buf + sizeof(nmhdr), nmhdr.length);
       if (ret < nmhdr.length || ret <= 0) {
-        sprintf(details, "Close connection: read() error,errno: %d, %s.", errno,
-                strerror(errno));
+        sprintf(details, "Close connection: read() error,errno: %d, %s. %s:%d", errno,
+                strerror(errno), __FILE__, __LINE__);
         goto rw_err_hand_quit;
       }
 
@@ -1465,15 +1468,15 @@ readwrite(int net_fd)
       if (crc32(buf + sizeof(nmhdr), nmhdr.length - sizeof(crc32_val)) !=
           crc32_val) {
         sprintf(details,
-                "Close connection: invalid data,full data crc32 error.");
+                "Close connection: invalid data,full data crc32 error. %s:%d", __FILE__, __LINE__);
         goto rw_err_hand_quit;
       }
 
       if (lflag) {
         ret = write(net_fd, buf, nmhdr.length + sizeof(nmhdr));
         if (ret == -1) {
-          sprintf(details, "Close connection: write() error,errno: %d, %s.",
-                  errno, strerror(errno));
+          sprintf(details, "Close connection: write() error,errno: %d, %s. %s:%d",
+                  errno, strerror(errno), __FILE__, __LINE__);
           goto rw_err_hand_quit;
         }
       } else {
@@ -1495,7 +1498,7 @@ readwrite(int net_fd)
 rw_err_hand_quit:
   gettimeofday(&tv, NULL);
 #ifdef DEBUG
-  printf(details);
+  printf("%s\n", details);
 #endif
   close(net_fd);
   net_fd = -1;
@@ -2137,3 +2140,7 @@ int db_execute(const char *sql, ...) {
 
   return -1;
 }
+
+ssize_t send_data(int __fd, const void *__buf, size_t __n) { return __n; }
+
+ssize_t recv_data(int __fd, const void *__buf, size_t __n) { return __n; }
