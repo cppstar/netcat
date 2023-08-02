@@ -140,30 +140,30 @@ struct netmsg_header {
 };
 
 /* Command Line Options */
-int bflag;          /* Allow Broadcast */
-int Fflag;          /* fdpass sock to stdout */
-unsigned int iflag; /* Interval Flag */
-int kflag;          /* More than one connect */
-int lflag;          /* Bind to local port */
-int Nflag;          /* shutdown() network socket */
-int nflag;          /* Don't do name look up */
-char *Pflag;        /* Proxy username */
-char *pflag;        /* Localport flag */
-int qflag = -1;     /* Quit after some secs */
-int rflag;          /* Random ports flag */
-char *sflag;        /* Source Address */
-int tflag;          /* Telnet Emulation */
-int uflag;          /* UDP - Default to TCP */
-int dccpflag;       /* DCCP - Default to TCP */
-int vflag;          /* Verbosity */
-int xflag;          /* Socks proxy */
-int zflag;          /* Port Scan Flag */
-int Dflag;          /* sodebug */
-int Iflag;          /* TCP receive buffer size */
-int Oflag;          /* TCP send buffer size */
-int Sflag;          /* TCP MD5 signature option */
-int Tflag = -1;     /* IP Type of Service */
-int dflag = 0;      /* Daemon flag */
+int bflag;              /* Allow Broadcast */
+int Fflag;              /* fdpass sock to stdout */
+unsigned int iflag = 1; /* Interval Flag */
+int kflag;              /* More than one connect */
+int lflag;              /* Bind to local port */
+int Nflag;              /* shutdown() network socket */
+int nflag;              /* Don't do name look up */
+char *Pflag;            /* Proxy username */
+char *pflag;            /* Localport flag */
+int qflag = -1;         /* Quit after some secs */
+int rflag;              /* Random ports flag */
+char *sflag;            /* Source Address */
+int tflag;              /* Telnet Emulation */
+int uflag;              /* UDP - Default to TCP */
+int dccpflag;           /* DCCP - Default to TCP */
+int vflag;              /* Verbosity */
+int xflag;              /* Socks proxy */
+int zflag;              /* Port Scan Flag */
+int Dflag;              /* sodebug */
+int Iflag;              /* TCP receive buffer size */
+int Oflag;              /* TCP send buffer size */
+int Sflag;              /* TCP MD5 signature option */
+int Tflag = -1;         /* IP Type of Service */
+int dflag = 0;          /* Daemon flag */
 int rtableid = -1;
 
 #if defined(TLS)
@@ -751,11 +751,12 @@ int main(int argc, char *argv[]) {
 
     if (s < 0) err(1, NULL);
 
-    gettimeofday(&tv, NULL);
-    char details[1024];
-    sprintf(details, "Host: %s; Port: %s;", host ? host : "0.0.0.0", *uport);
-    db_execute(sql_insert_server_log, tv.tv_sec, tv.tv_usec, "Listen started.",
-               details);
+      // gettimeofday(&tv, NULL);
+      // char details[1024];
+      // sprintf(details, "Host: %s; Port: %s;", host ? host : "0.0.0.0",
+      // *uport); db_execute(sql_insert_server_log, tv.tv_sec, tv.tv_usec,
+      // "Listen started.",
+      //            details);
 
 #if defined(TLS)
     if (usetls) {
@@ -768,7 +769,7 @@ int main(int argc, char *argv[]) {
 #endif
     /* Allow only one connection at a time, but stay alive. */
     for (;;) {
-      // UDP and stay alive
+      // UDP and stay alive(Server)
       if (uflag && kflag) {
         /*
          * For UDP and -k, don't connect the socket,
@@ -781,7 +782,7 @@ int main(int argc, char *argv[]) {
         readwrite(s);
 #endif
       }
-      // UDP and not stay alive
+      // UDP and not stay alive(Server)
       else if (uflag && !kflag) {
         /*
          * For UDP and not -k, we will use recvfrom()
@@ -810,7 +811,7 @@ int main(int argc, char *argv[]) {
 #else
         readwrite(s);
       }
-      // TCP
+      // TCP(Server)
       else {
 #endif
         int connfd;
@@ -821,16 +822,8 @@ int main(int argc, char *argv[]) {
           /* For now, all errnos are fatal */
           err(1, "accept");
         }
-        if (vflag)
-          report_sock("Connection received", (struct sockaddr *)&cliaddr, len,
-                      family == AF_UNIX ? host : NULL);
-
-        gettimeofday(&tv, NULL);
-        char details[1024];
-        sprintf(details, "Client: %s;", host);
-        db_execute(sql_insert_server_log, tv.tv_sec, tv.tv_usec,
-                   "Connection received.", details);
-
+        report_sock("Connection received", (struct sockaddr *)&cliaddr, len,
+                    family == AF_UNIX ? host : NULL);
 #if defined(TLS)
         if ((usetls) && (tls_cctx = tls_setup_server(tls_ctx, connfd, host)))
           readwrite(connfd, tls_cctx);
@@ -854,7 +847,7 @@ int main(int argc, char *argv[]) {
     }
   }
   // Client
-  else if (family == AF_UNIX) {
+  else if (family == AF_UNIX) {  // Unix(Client)
     ret = 0;
 
     if ((s = unix_connect(host)) > 0) {
@@ -872,7 +865,7 @@ int main(int argc, char *argv[]) {
 
     if (uflag) unlink(unix_dg_tmp_socket);
     return ret;
-  } else {
+  } else {  // TCP and UDP(Client)
     int i = 0;
 
     /* Construct the portlist[] array. */
@@ -926,10 +919,15 @@ int main(int argc, char *argv[]) {
         }
 
         gettimeofday(&tv, NULL);
-        char details[1024];
-        sprintf(details, "Host: %s; Port: %s;", host, portlist[i]);
-        db_execute(sql_insert_client_log, tv.tv_sec, tv.tv_usec,
-                   "Connect server succeeded.", details);
+        char details[2048];
+        if (xflag)
+          sprintf(details,
+                  "Host: %s; Port: %s; Proxy Host: %s; Proxy Port: %s;", host,
+                  portlist[i], proxy, proxyport);
+        else
+          sprintf(details, "Host: %s; Port: %s;", host, portlist[i]);
+        db_execute(sql_insert_client_log, tv.tv_sec, tv.tv_usec, "Connected.",
+                   details);
 
         if (Fflag) fdpass(s);
 #if defined(TLS)
@@ -1376,30 +1374,34 @@ readwrite(int net_fd)
 #endif
 {
   unsigned char buf[MAXLEN_SNDBUF];
+  char details[2048];
   ssize_t ret;
   struct timeval tv, tv_last;
   fd_set rfds;
-  int retval;
   struct netmsg_header nmhdr;
   int crc32_val = 0;
+  __time_t interval_time = iflag * 1000000;
+  __time_t rtt = interval_time;
+  struct sockaddr_in peer_addr;
+  unsigned int peer_addr_len = sizeof(peer_addr);
+  char *host;
+  __uint16_t port;
 
   FD_ZERO(&rfds);
   FD_SET(net_fd, &rfds);
 
-  struct sockaddr_in peer_addr;
-  unsigned int peer_addr_len = sizeof(peer_addr);
   if (getpeername(net_fd, &peer_addr, &peer_addr_len) != 0) {
-    close(net_fd);
-    net_fd = -1;
-    return;
+    sprintf(details, "Close connection: getpeername() error,errno: %d, %s.",
+            errno, strerror(errno));
+    goto rw_err_hand_quit;
   }
-
-  char *host = inet_ntoa(peer_addr.sin_addr);
-  __uint16_t port = ntohs(peer_addr.sin_port);
+  host = inet_ntoa(peer_addr.sin_addr);
+  port = ntohs(peer_addr.sin_port);
 
   while (1) {
     // The client will periodically send messages to the server.
     if (!lflag) {
+      if (rtt < interval_time) usleep(interval_time - rtt);
       gettimeofday(&tv, NULL);
       nmhdr.version = 1;
       nmhdr.length = packet_size - sizeof(nmhdr);
@@ -1415,79 +1417,84 @@ readwrite(int net_fd)
              sizeof(crc32_val));
       ret = write(net_fd, buf, packet_size);
       if (ret == -1) {
-        close(net_fd);
-        net_fd = -1;
-        db_execute(sql_insert_client_log, tv.tv_sec, tv.tv_usec,
-                   "Disconnected.", "Close connection: write() error.");
-        return;
+        sprintf(details, "Close connection: write() error,errno: %d, %s.",
+                errno, strerror(errno));
+        goto rw_err_hand_quit;
       }
     }
 
-    retval = select(net_fd + 1, &rfds, NULL, NULL, NULL);
-
-    if (retval == -1) {
-      gettimeofday(&tv, NULL);
-      close(net_fd);
-      net_fd = -1;
-      db_execute(lflag ? sql_insert_server_log : sql_insert_client_log,
-                 tv.tv_sec, tv.tv_usec, "Disconnected.",
-                 "Function select() error.");
-      return;
+    ret = select(net_fd + 1, &rfds, NULL, NULL, NULL);
+    if (ret == -1) {
+      sprintf(details, "Close connection: select() error,errno: %d, %s.", errno,
+              strerror(errno));
+      goto rw_err_hand_quit;
     }
 
     /* try to read from network */
     if (FD_ISSET(net_fd, &rfds)) {
+      // Read packet header.
       ret = read(net_fd, buf, sizeof(nmhdr));
+      if (ret < sizeof(nmhdr) || ret <= 0) {
+        sprintf(details, "Close connection: read() error,errno: %d, %s.", errno,
+                strerror(errno));
+        goto rw_err_hand_quit;
+      }
 
       memcpy(&nmhdr, buf, sizeof(nmhdr));
-      if (ret < sizeof(nmhdr) ||
-          crc32(buf, sizeof(nmhdr) - sizeof(nmhdr.crc32)) != nmhdr.crc32) {
+      if (crc32(buf, sizeof(nmhdr) - sizeof(nmhdr.crc32)) != nmhdr.crc32) {
+        sprintf(details, "Close connection: invalid data,header crc32 error.");
+        goto rw_err_hand_quit;
+      }
+
+      // Read packet full data.
+      ret = read(net_fd, buf + sizeof(nmhdr), nmhdr.length);
+      if (ret < nmhdr.length || ret <= 0) {
+        sprintf(details, "Close connection: read() error,errno: %d, %s.", errno,
+                strerror(errno));
+        goto rw_err_hand_quit;
+      }
+
+      memcpy(&crc32_val, buf + sizeof(nmhdr) + nmhdr.length - sizeof(crc32_val),
+             sizeof(crc32_val));
+      if (crc32(buf + sizeof(nmhdr), nmhdr.length - sizeof(crc32_val)) !=
+          crc32_val) {
+        sprintf(details,
+                "Close connection: invalid data,full data crc32 error.");
+        goto rw_err_hand_quit;
+      }
+
+      if (lflag) {
+        ret = write(net_fd, buf, nmhdr.length + sizeof(nmhdr));
+        if (ret == -1) {
+          sprintf(details, "Close connection: write() error,errno: %d, %s.",
+                  errno, strerror(errno));
+          goto rw_err_hand_quit;
+        }
+      } else {
+        memcpy(&tv_last.tv_sec, buf + sizeof(nmhdr), sizeof(tv_last.tv_sec));
+        memcpy(&tv_last.tv_usec, buf + sizeof(nmhdr) + sizeof(tv_last.tv_sec),
+               sizeof(tv_last.tv_usec));
         gettimeofday(&tv, NULL);
-        close(net_fd);
-        net_fd = -1;
-        db_execute(lflag ? sql_insert_server_log : sql_insert_client_log,
-                   tv.tv_sec, tv.tv_usec, "Disconnected.",
-                   ret == 0 ? "Connection reset by peer."
-                            : "Invalid data,close the connection.");
-        return;
+        rtt = (tv.tv_sec - tv_last.tv_sec) * 1000000 + tv.tv_usec -
+              tv_last.tv_usec;
+#ifdef DEBUG
+        printf("Client Received: %.3lf\n", (double)rtt / 1000);
+#endif
+        db_execute(sql_insert_record, tv.tv_sec, tv.tv_usec, rtt, host, port,
+                   xflag);
       }
     }
-
-    ret = read(net_fd, buf + sizeof(nmhdr), nmhdr.length);
-
-    if (ret < nmhdr.length) {
-      gettimeofday(&tv, NULL);
-      close(net_fd);
-      net_fd = -1;
-      db_execute(lflag ? sql_insert_server_log : sql_insert_client_log,
-                 tv.tv_sec, tv.tv_usec, "Disconnected.",
-                 ret == 0 ? "Connection reset by peer."
-                          : "Invalid data,close the connection.");
-      return;
-    }
-
-    if (lflag) {
-      write(net_fd, buf, nmhdr.length + sizeof(nmhdr));
-    } else {
-      __time_t rtt;
-      memcpy(&tv_last.tv_sec, buf + sizeof(nmhdr), sizeof(tv_last.tv_sec));
-      memcpy(&tv_last.tv_usec, buf + sizeof(nmhdr) + sizeof(tv_last.tv_sec),
-             sizeof(tv_last.tv_usec));
-      gettimeofday(&tv, NULL);
-      rtt =
-          (tv.tv_sec - tv_last.tv_sec) * 1000000 + tv.tv_usec - tv_last.tv_usec;
-
-#ifdef DEBUG
-      printf("Client Received: %.3lf\n", (double)rtt / 1000);
-#endif
-
-      db_execute(sql_insert_record, tv.tv_sec, tv.tv_usec, rtt, host, port,
-                 xflag);
-
-      __time_t time_sleep = 1000000 - rtt;
-      if (time_sleep > 0) usleep(time_sleep);
-    }
   }
+
+rw_err_hand_quit:
+  gettimeofday(&tv, NULL);
+#ifdef DEBUG
+  printf(details);
+#endif
+  close(net_fd);
+  net_fd = -1;
+  db_execute(lflag ? sql_insert_server_log : sql_insert_client_log, tv.tv_sec,
+             tv.tv_usec, "Disconnected.", details);
 }
 
 /*
@@ -1905,6 +1912,10 @@ void report_sock(const char *msg, const struct sockaddr *sa, socklen_t salen,
   char host[NI_MAXHOST], port[NI_MAXSERV];
   int herr;
   int flags = NI_NUMERICSERV;
+  struct timeval tv;
+  char details[2048];
+
+  gettimeofday(&tv, NULL);
 
   if (path != NULL) {
     fprintf(stderr, "%s on %s\n", msg, path);
@@ -1921,7 +1932,12 @@ void report_sock(const char *msg, const struct sockaddr *sa, socklen_t salen,
       errx(1, "getnameinfo: %s", gai_strerror(herr));
   }
 
-  fprintf(stderr, "%s on %s %s\n", msg, host, port);
+  if (vflag) {
+    fprintf(stderr, "%s on %s %s\n", msg, host, port);
+  }
+
+  sprintf(details, "Client: %s, Port: %s;", host, port);
+  db_execute(sql_insert_server_log, tv.tv_sec, tv.tv_usec, msg, details);
 }
 
 void help(void) {
