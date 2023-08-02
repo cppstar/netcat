@@ -1457,6 +1457,7 @@ readwrite(int net_fd)
 
       // Read packet full data.
       ret = read(net_fd, buf + sizeof(nmhdr), nmhdr.length);
+      fprintf(stderr, "ret value: %d\n", ret);
       if (ret < nmhdr.length || ret <= 0) {
         sprintf(details, "Close connection: read() error,errno: %d, %s. %s:%d", errno,
                 strerror(errno), __FILE__, __LINE__);
