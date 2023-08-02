@@ -142,6 +142,7 @@ struct netmsg_header {
 /* Command Line Options */
 int bflag;              /* Allow Broadcast */
 int Fflag;              /* fdpass sock to stdout */
+int gflag;              /* packet size */
 unsigned int iflag = 1; /* Interval Flag */
 int kflag;              /* More than one connect */
 int lflag;              /* Bind to local port */
@@ -335,9 +336,9 @@ int main(int argc, char *argv[]) {
       (ch = getopt(
            argc, argv,
 #if defined(TLS)
-           "46bC:cDde:FH:hI:i:K:klM:m:NnO:o:P:p:q:R:rSs:T:tUuV:vW:w:X:x:Z:z"))
+           "46bC:cDde:Fg:H:hI:i:K:klM:m:NnO:o:P:p:q:R:rSs:T:tUuV:vW:w:X:x:Z:z"))
 #else
-           "46bCDdFhI:i:klM:m:NnO:P:p:q:rSs:T:tUuV:vW:w:X:x:Zz"))
+           "46bCDdFg:hI:i:klM:m:NnO:P:p:q:rSs:T:tUuV:vW:w:X:x:Zz"))
 #endif
       != -1) {
     switch (ch) {
@@ -346,6 +347,11 @@ int main(int argc, char *argv[]) {
         break;
       case '6':
         family = AF_INET6;
+        break;
+      case 'g':
+        gflag = strtonum(optarg, sizeof(__time_t)*2+sizeof(__int32_t), 60000, &errstr);
+        if (errstr) errx(1, "interval %s: %s", errstr, optarg);
+        packet_size = gflag;
         break;
       case 'b':
 #if defined(SO_BROADCAST)
