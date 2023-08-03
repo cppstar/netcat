@@ -1385,8 +1385,8 @@ readwrite(int net_fd, struct tls *tls_ctx)
 readwrite(int net_fd)
 #endif
 {
-  unsigned char buf[MAXLEN_SNDBUF];
-  char details[2048];
+  unsigned char buf[MAXLEN_SNDBUF] = {0};
+  char details[2048] = {0};
   ssize_t ret;
   struct timeval tv, tv_last;
   fd_set rfds;
@@ -2160,7 +2160,7 @@ ssize_t send_data(int __fd, void *__buf, size_t __n) {
     if (select(__fd + 1, NULL, &fds, NULL, NULL) == -1) return -1;
 
     if (FD_ISSET(__fd, &fds)) {
-      ret = write(__fd, __buf + __n - nleft, nleft < 1420 ? nleft : 1420);
+      ret = write(__fd, __buf + __n - nleft, nleft < 1448 ? nleft : 1448);
       if (ret <= 0) return ret;
     }
 
@@ -2182,7 +2182,7 @@ ssize_t recv_data(int __fd, void *__buf, size_t __n) {
     if (select(__fd + 1, &fds, NULL, NULL, NULL) == -1) return -1;
 
     if (FD_ISSET(__fd, &fds)) {
-      ret = read(__fd, __buf + __n - nleft, nleft < 1420 ? nleft : 1420);
+      ret = read(__fd, __buf + __n - nleft, nleft < 1448 ? nleft : 1448);
       if (ret <= 0) return ret;
 
       nleft -= ret;
