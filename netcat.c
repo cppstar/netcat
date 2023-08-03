@@ -1426,7 +1426,7 @@ readwrite(int net_fd)
              sizeof(crc32_val));
       ret = write(net_fd, buf, packet_size);
       if (ret == -1) {
-        sprintf(details, "Close connection: write() error,errno: %d, %s. %s:%d",
+        sprintf(details, "Close connection: 1 write() error,errno: %d, %s. %s:%d",
                 errno, strerror(errno), __FILE__, __LINE__);
         goto rw_err_hand_quit;
       }
@@ -1444,7 +1444,7 @@ readwrite(int net_fd)
       // Read packet header.
       ret = read(net_fd, buf, sizeof(nmhdr));
       if (ret < sizeof(nmhdr) || ret <= 0) {
-        sprintf(details, "Close connection: read() error,errno: %d, %s. %s:%d", errno,
+        sprintf(details, "Close connection: 1 read() error,errno: %d, %s. %s:%d", errno,
                 strerror(errno), __FILE__, __LINE__);
         goto rw_err_hand_quit;
       }
@@ -1457,9 +1457,9 @@ readwrite(int net_fd)
 
       // Read packet full data.
       ret = read(net_fd, buf + sizeof(nmhdr), nmhdr.length);
-      fprintf(stderr, "ret value: %d\n", ret);
+      fprintf(stderr, "ret value: %ld\n", ret);
       if (ret < nmhdr.length || ret <= 0) {
-        sprintf(details, "Close connection: read() error,errno: %d, %s. %s:%d", errno,
+        sprintf(details, "Close connection: 2 read() error,errno: %d, %s. %s:%d", errno,
                 strerror(errno), __FILE__, __LINE__);
         goto rw_err_hand_quit;
       }
@@ -1476,7 +1476,7 @@ readwrite(int net_fd)
       if (lflag) {
         ret = write(net_fd, buf, nmhdr.length + sizeof(nmhdr));
         if (ret == -1) {
-          sprintf(details, "Close connection: write() error,errno: %d, %s. %s:%d",
+          sprintf(details, "Close connection: 2 write() error,errno: %d, %s. %s:%d",
                   errno, strerror(errno), __FILE__, __LINE__);
           goto rw_err_hand_quit;
         }
