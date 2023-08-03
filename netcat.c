@@ -1443,6 +1443,7 @@ readwrite(int net_fd)
     if (FD_ISSET(net_fd, &rfds)) {
       // Read packet header.
       ret = read(net_fd, buf, sizeof(nmhdr));
+      fprintf(stderr, "ret value read 1: %ld\n", ret);
       if (ret < sizeof(nmhdr) || ret <= 0) {
         sprintf(details, "Close connection: 1 read() error,errno: %d, %s. %s:%d", errno,
                 strerror(errno), __FILE__, __LINE__);
@@ -1457,7 +1458,7 @@ readwrite(int net_fd)
 
       // Read packet full data.
       ret = read(net_fd, buf + sizeof(nmhdr), nmhdr.length);
-      fprintf(stderr, "ret value: %ld\n", ret);
+      fprintf(stderr, "ret value read 2: %ld\n", ret);
       if (ret < nmhdr.length || ret <= 0) {
         sprintf(details, "Close connection: 2 read() error,errno: %d, %s. %s:%d", errno,
                 strerror(errno), __FILE__, __LINE__);
