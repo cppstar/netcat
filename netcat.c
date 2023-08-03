@@ -297,8 +297,8 @@ int db_create_object(const char *object_type, const char *object_name,
                      const char *sql);
 int db_execute(const char *sql, ...);
 uint32_t crc32(const void *buf, size_t size);
-ssize_t send_data(int __fd, const void *__buf, size_t __n);
-ssize_t recv_data(int __fd, const void *__buf, size_t __n);
+ssize_t send_data(int __fd, void *__buf, size_t __n);
+ssize_t recv_data(int __fd, void *__buf, size_t __n);
 
 int main(int argc, char *argv[]) {
   int ch, s = -1, ret, socksv;
@@ -1424,77 +1424,83 @@ readwrite(int net_fd)
                         packet_size - sizeof(nmhdr) - sizeof(crc32_val));
       memcpy(buf + packet_size - sizeof(crc32_val), &crc32_val,
              sizeof(crc32_val));
-      ret = write(net_fd, buf, packet_size);
+      ret = send_data(net_fd, buf, packet_size);
       if (ret == -1) {
-        sprintf(details, "Close connection: 1 write() error,errno: %d, %s. %s:%d",
-                errno, strerror(errno), __FILE__, __LINE__);
+        sprintf(details,
+                "Close connection: 1 write() error,errno: %d, %s. %s:%d", errno,
+                strerror(errno), __FILE__, __LINE__);
         goto rw_err_hand_quit;
       }
     }
 
-    ret = select(net_fd + 1, &rfds, NULL, NULL, NULL);
-    if (ret == -1) {
-      sprintf(details, "Close connection: select() error,errno: %d, %s. %s:%d", errno,
-              strerror(errno), __FILE__, __LINE__);
+    // ret = select(net_fd + 1, &rfds, NULL, NULL, NULL);
+    // if (ret == -1) {
+    //   sprintf(details, "Close connection: select() error,errno: %d, %s.
+    //   %s:%d",
+    //           errno, strerror(errno), __FILE__, __LINE__);
+    //   goto rw_err_hand_quit;
+    // }
+
+    /* try to read from network */
+    // if (FD_ISSET(net_fd, &rfds)) {
+    // Read packet header.
+    ret = recv_data(net_fd, buf, sizeof(nmhdr));
+    fprintf(stderr, "ret value read 1: %ld\n", ret);
+    if (ret < sizeof(nmhdr) || ret <= 0) {
+      sprintf(details, "Close connection: 1 read() error,errno: %d, %s. %s:%d",
+              errno, strerror(errno), __FILE__, __LINE__);
       goto rw_err_hand_quit;
     }
 
-    /* try to read from network */
-    if (FD_ISSET(net_fd, &rfds)) {
-      // Read packet header.
-      ret = read(net_fd, buf, sizeof(nmhdr));
-      fprintf(stderr, "ret value read 1: %ld\n", ret);
-      if (ret < sizeof(nmhdr) || ret <= 0) {
-        sprintf(details, "Close connection: 1 read() error,errno: %d, %s. %s:%d", errno,
-                strerror(errno), __FILE__, __LINE__);
-        goto rw_err_hand_quit;
-      }
-
-      memcpy(&nmhdr, buf, sizeof(nmhdr));
-      if (crc32(buf, sizeof(nmhdr) - sizeof(nmhdr.crc32)) != nmhdr.crc32) {
-        sprintf(details, "Close connection: invalid data,header crc32 error. %s:%d", __FILE__, __LINE__);
-        goto rw_err_hand_quit;
-      }
-
-      // Read packet full data.
-      ret = read(net_fd, buf + sizeof(nmhdr), nmhdr.length);
-      fprintf(stderr, "ret value read 2: %ld\n", ret);
-      if (ret < nmhdr.length || ret <= 0) {
-        sprintf(details, "Close connection: 2 read() error,errno: %d, %s. %s:%d", errno,
-                strerror(errno), __FILE__, __LINE__);
-        goto rw_err_hand_quit;
-      }
-
-      memcpy(&crc32_val, buf + sizeof(nmhdr) + nmhdr.length - sizeof(crc32_val),
-             sizeof(crc32_val));
-      if (crc32(buf + sizeof(nmhdr), nmhdr.length - sizeof(crc32_val)) !=
-          crc32_val) {
-        sprintf(details,
-                "Close connection: invalid data,full data crc32 error. %s:%d", __FILE__, __LINE__);
-        goto rw_err_hand_quit;
-      }
-
-      if (lflag) {
-        ret = write(net_fd, buf, nmhdr.length + sizeof(nmhdr));
-        if (ret == -1) {
-          sprintf(details, "Close connection: 2 write() error,errno: %d, %s. %s:%d",
-                  errno, strerror(errno), __FILE__, __LINE__);
-          goto rw_err_hand_quit;
-        }
-      } else {
-        memcpy(&tv_last.tv_sec, buf + sizeof(nmhdr), sizeof(tv_last.tv_sec));
-        memcpy(&tv_last.tv_usec, buf + sizeof(nmhdr) + sizeof(tv_last.tv_sec),
-               sizeof(tv_last.tv_usec));
-        gettimeofday(&tv, NULL);
-        rtt = (tv.tv_sec - tv_last.tv_sec) * 1000000 + tv.tv_usec -
-              tv_last.tv_usec;
-#ifdef DEBUG
-        printf("Client Received: %.3lf\n", (double)rtt / 1000);
-#endif
-        db_execute(sql_insert_record, tv.tv_sec, tv.tv_usec, rtt, host, port,
-                   xflag);
-      }
+    memcpy(&nmhdr, buf, sizeof(nmhdr));
+    if (crc32(buf, sizeof(nmhdr) - sizeof(nmhdr.crc32)) != nmhdr.crc32) {
+      sprintf(details,
+              "Close connection: invalid data,header crc32 error. %s:%d",
+              __FILE__, __LINE__);
+      goto rw_err_hand_quit;
     }
+
+    // Read packet full data.
+    ret = recv_data(net_fd, buf + sizeof(nmhdr), nmhdr.length);
+    fprintf(stderr, "ret value read 2: %ld\n", ret);
+    if (ret < nmhdr.length || ret <= 0) {
+      sprintf(details, "Close connection: 2 read() error,errno: %d, %s. %s:%d",
+              errno, strerror(errno), __FILE__, __LINE__);
+      goto rw_err_hand_quit;
+    }
+
+    memcpy(&crc32_val, buf + sizeof(nmhdr) + nmhdr.length - sizeof(crc32_val),
+           sizeof(crc32_val));
+    if (crc32(buf + sizeof(nmhdr), nmhdr.length - sizeof(crc32_val)) !=
+        crc32_val) {
+      sprintf(details,
+              "Close connection: invalid data,full data crc32 error. %s:%d",
+              __FILE__, __LINE__);
+      goto rw_err_hand_quit;
+    }
+
+    if (lflag) {
+      ret = send_data(net_fd, buf, nmhdr.length + sizeof(nmhdr));
+      if (ret == -1) {
+        sprintf(details,
+                "Close connection: 2 write() error,errno: %d, %s. %s:%d", errno,
+                strerror(errno), __FILE__, __LINE__);
+        goto rw_err_hand_quit;
+      }
+    } else {
+      memcpy(&tv_last.tv_sec, buf + sizeof(nmhdr), sizeof(tv_last.tv_sec));
+      memcpy(&tv_last.tv_usec, buf + sizeof(nmhdr) + sizeof(tv_last.tv_sec),
+             sizeof(tv_last.tv_usec));
+      gettimeofday(&tv, NULL);
+      rtt =
+          (tv.tv_sec - tv_last.tv_sec) * 1000000 + tv.tv_usec - tv_last.tv_usec;
+#ifdef DEBUG
+      printf("Client Received: %.3lf\n", (double)rtt / 1000);
+#endif
+      db_execute(sql_insert_record, tv.tv_sec, tv.tv_usec, rtt, host, port,
+                 xflag);
+    }
+    // }
   }
 
 rw_err_hand_quit:
@@ -2143,6 +2149,46 @@ int db_execute(const char *sql, ...) {
   return -1;
 }
 
-ssize_t send_data(int __fd, const void *__buf, size_t __n) { return __n; }
+ssize_t send_data(int __fd, void *__buf, size_t __n) {
+  size_t nleft = __n;
+  ssize_t ret;
+  fd_set fds;
 
-ssize_t recv_data(int __fd, const void *__buf, size_t __n) { return __n; }
+  FD_ZERO(&fds);
+  FD_SET(__fd, &fds);
+
+  while (nleft) {
+    if (select(__fd + 1, NULL, &fds, NULL, NULL) == -1) return -1;
+
+    if (FD_ISSET(__fd, &fds)) {
+      ret = write(__fd, __buf + __n - nleft, nleft < 1420 ? nleft : 1420);
+      if (ret <= 0) return ret;
+    }
+
+    nleft -= ret;
+  }
+
+  return __n;
+}
+
+ssize_t recv_data(int __fd, void *__buf, size_t __n) {
+  size_t nleft = __n;
+  ssize_t ret;
+  fd_set fds;
+
+  FD_ZERO(&fds);
+  FD_SET(__fd, &fds);
+
+  while (nleft) {
+    if (select(__fd + 1, &fds, NULL, NULL, NULL) == -1) return -1;
+
+    if (FD_ISSET(__fd, &fds)) {
+      ret = read(__fd, __buf + __n - nleft, nleft < 1420 ? nleft : 1420);
+      if (ret <= 0) return ret;
+
+      nleft -= ret;
+    }
+  }
+
+  return __n;
+}
