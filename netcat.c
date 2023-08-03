@@ -197,7 +197,7 @@ int minttl = -1;
 
 #define MAXLEN_SNDBUF 65535
 sqlite3 *db = NULL;
-int packet_size = 1024;
+int packet_size = 32;
 
 // Sqlite operation string.
 char *sql_create_table_record =
@@ -350,12 +350,15 @@ int main(int argc, char *argv[]) {
       case '6':
         family = AF_INET6;
         break;
-      case 'g':
-        gflag = strtonum(optarg, sizeof(__time_t) * 2 + sizeof(__int32_t),
-                         60000, &errstr);
-        if (errstr) errx(1, "interval %s: %s", errstr, optarg);
+      case 'g': {
+        const long long minval = sizeof(struct netmsg_header) + sizeof(__time_t) * 2 +
+                           sizeof(__int32_t);
+        const long long maxval = 60000;
+        gflag = strtonum(optarg, minval, maxval, &errstr);
+        if (errstr)
+          errx(1, "interval (%lld-%lld) %s: %s", minval, maxval, errstr, optarg);
         packet_size = gflag;
-        break;
+      } break;
       case 'b':
 #if defined(SO_BROADCAST)
         bflag = 1;
@@ -1400,8 +1403,9 @@ readwrite(int net_fd)
   FD_SET(net_fd, &rfds);
 
   if (getpeername(net_fd, &peer_addr, &peer_addr_len) != 0) {
-    sprintf(details, "Close connection: getpeername() error,errno: %d, %s.",
-            errno, strerror(errno));
+    sprintf(details,
+            "Close connection: getpeername() error,errno: %d, %s. %s:%d", errno,
+            strerror(errno), __FILE__, __LINE__);
     goto rw_err_hand_quit;
   }
   host = inet_ntoa(peer_addr.sin_addr);
@@ -1427,28 +1431,21 @@ readwrite(int net_fd)
       ret = send_data(net_fd, buf, packet_size);
       if (ret == -1) {
         sprintf(details,
-                "Close connection: 1 write() error,errno: %d, %s. %s:%d", errno,
-                strerror(errno), __FILE__, __LINE__);
+                "Close connection: send_data 1 error,errno: %d, %s. %s:%d",
+                errno, strerror(errno), __FILE__, __LINE__);
         goto rw_err_hand_quit;
       }
     }
 
-    // ret = select(net_fd + 1, &rfds, NULL, NULL, NULL);
-    // if (ret == -1) {
-    //   sprintf(details, "Close connection: select() error,errno: %d, %s.
-    //   %s:%d",
-    //           errno, strerror(errno), __FILE__, __LINE__);
-    //   goto rw_err_hand_quit;
-    // }
-
-    /* try to read from network */
-    // if (FD_ISSET(net_fd, &rfds)) {
     // Read packet header.
     ret = recv_data(net_fd, buf, sizeof(nmhdr));
-    fprintf(stderr, "ret value read 1: %ld\n", ret);
+#ifdef DEBUG
+    fprintf(stderr, "ret value recv_data 1: %ld\n", ret);
+#endif
     if (ret < sizeof(nmhdr) || ret <= 0) {
-      sprintf(details, "Close connection: 1 read() error,errno: %d, %s. %s:%d",
-              errno, strerror(errno), __FILE__, __LINE__);
+      sprintf(details,
+              "Close connection: recv_data 1 error,errno: %d, %s. %s:%d", errno,
+              strerror(errno), __FILE__, __LINE__);
       goto rw_err_hand_quit;
     }
 
@@ -1460,12 +1457,15 @@ readwrite(int net_fd)
       goto rw_err_hand_quit;
     }
 
-    // Read packet full data.
+    // Read packet real data.
     ret = recv_data(net_fd, buf + sizeof(nmhdr), nmhdr.length);
-    fprintf(stderr, "ret value read 2: %ld\n", ret);
+#ifdef DEBUG
+    fprintf(stderr, "ret value recv_data 2: %ld\n", ret);
+#endif
     if (ret < nmhdr.length || ret <= 0) {
-      sprintf(details, "Close connection: 2 read() error,errno: %d, %s. %s:%d",
-              errno, strerror(errno), __FILE__, __LINE__);
+      sprintf(details,
+              "Close connection: recv_data 2 error,errno: %d, %s. %s:%d", errno,
+              strerror(errno), __FILE__, __LINE__);
       goto rw_err_hand_quit;
     }
 
@@ -1474,7 +1474,7 @@ readwrite(int net_fd)
     if (crc32(buf + sizeof(nmhdr), nmhdr.length - sizeof(crc32_val)) !=
         crc32_val) {
       sprintf(details,
-              "Close connection: invalid data,full data crc32 error. %s:%d",
+              "Close connection: invalid data,real data crc32 error. %s:%d",
               __FILE__, __LINE__);
       goto rw_err_hand_quit;
     }
@@ -1500,7 +1500,6 @@ readwrite(int net_fd)
       db_execute(sql_insert_record, tv.tv_sec, tv.tv_usec, rtt, host, port,
                  xflag);
     }
-    // }
   }
 
 rw_err_hand_quit:
